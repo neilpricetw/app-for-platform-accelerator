@@ -12,7 +12,7 @@ env:
   DEVELOPMENT_ACCOUNT_DEPLOY_IAM_ROLE: "arn:aws:iam::216354278048:role/neil123-syd-wl-dev-ecs-deploy-gha-role"    # set this to "ecs_deploy_gha_role_arn" output from "workload-dev" PA module
   ECR_REPOSITORY: "neil123-syd-neil2"                     # set this to the Amazon ECR repository name for the workload
   ECS_SERVICE: neil123-syd-neil2                                    # set this to your Amazon ECS service name
-  ECS_CLUSTER: neil123-syd-wl-dev-platform-accelerator              # set this to your Amazon ECS cluster name
+  ECS_CLUSTER: neil123-syd-wl-dev-platform-accelerator             # set this to your Amazon ECS cluster name
   ECS_TASK_DEFINITION: neil123-syd-neil2                            # set this to the Amazon ECS task definition name
   CONTAINER_NAME: neil123-syd-neil2                           # set this to the name of the container in the containerDefinitions section of your task definition
   CODEDEPLOY_APPLICATION: neil123-syd-wl-dev-neil123-syd-neil2-app         # set this to CodeDeploy Application (if applicable)
