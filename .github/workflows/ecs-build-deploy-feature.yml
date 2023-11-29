@@ -1,0 +1,119 @@
+# Example Github flow to build and deploy a Docker image to ECS
+# This deploys from any branches called "feature/*" to Development
+name: Build and Deploy feature branch to Amazon ECS
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: "ap-southeast-2"
+  SHARED_ACCOUNT_DEPLOY_IAM_ROLE: "arn:aws:iam::665628331607:role/neil123-syd-shared-ecs-deploy-gha-role"        # set this to "ecs_deploy_gha_role_arn" output from "shared" PA module
+  DEVELOPMENT_ACCOUNT_DEPLOY_IAM_ROLE: "arn:aws:iam::216354278048:role/neil123-syd-wl-dev-ecs-deploy-gha-role"    # set this to "ecs_deploy_gha_role_arn" output from "workload-dev" PA module
+  ECR_REPOSITORY: "neil123-syd-neil2"                     # set this to the Amazon ECR repository name for the workload
+  ECS_SERVICE: neil123-syd-neil2                                    # set this to your Amazon ECS service name
+  ECS_CLUSTER: neil123-syd-wl-dev-platform-accelerator              # set this to your Amazon ECS cluster name
+  ECS_TASK_DEFINITION: neil123-syd-neil2                            # set this to the Amazon ECS task definition name
+  CONTAINER_NAME: neil123-syd-neil2                           # set this to the name of the container in the containerDefinitions section of your task definition
+  CODEDEPLOY_APPLICATION: neil123-syd-wl-dev-neil123-syd-neil2-app         # set this to CodeDeploy Application (if applicable)
+  CODEDEPLOY_DEPLOYMENT_GROUP: neil123-syd-wl-dev-neil123-syd-neil2-dg     # set this to CodeDeploy Deployment Group (if applicable)
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: github-actions-shared
+        role-to-assume: ${{ env.SHARED_ACCOUNT_DEPLOY_IAM_ROLE }}
+        mask-aws-account-id: false
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-dev:
+    name: Deploy Development
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # configure AWS credentials
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: github-actions-dev
+        role-to-assume: ${{ env.DEVELOPMENT_ACCOUNT_DEPLOY_IAM_ROLE }}
+        mask-aws-account-id: false
+
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition --task-definition ${{ env.ECS_TASK_DEFINITION }} --query taskDefinition > task-definition.json
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ needs.build-and-publish.outputs.image }}
+
+    # This is needed for rolling
+    # - name: Deploy Amazon ECS task definition
+    #   uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+    #   with:
+    #     task-definition: ${{ steps.task-def.outputs.task-definition }}
+    #     service: ${{ env.ECS_SERVICE }}
+    #     cluster: ${{ env.ECS_CLUSTER }}
+    #     wait-for-service-stability: true
+
+    # This is needed for BlueGreen (CodeDeploy)
+    - name: Build appspec
+      run: |
+        echo "Get the container port from the taskdefinition for appspec.yml"
+        export CONTAINER_PORT=$(jq -r --arg CONTAINER_NAME "$CONTAINER_NAME" '.containerDefinitions[] | select( .name==$CONTAINER_NAME) | .portMappings[].containerPort' task-definition.json)
+        echo "Container port is $CONTAINER_PORT"
+        
+        echo "Creating appspec.yml file"
+        printf 'version: 0.0\nResources:\n  - TargetService:\n      Type: AWS::ECS::Service\n      Properties:\n        TaskDefinition: <TASK_DEFINITION>\n        LoadBalancerInfo:\n          ContainerName: \"%s\"\n          ContainerPort: %s' $CONTAINER_NAME $CONTAINER_PORT > appspec.yml
+        cat appspec.yml
+
+    - name: Deploy to Amazon ECS
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        codedeploy-appspec: appspec.yml
+        codedeploy-application:  ${{ env.CODEDEPLOY_APPLICATION }}
+        codedeploy-deployment-group: ${{ env.CODEDEPLOY_DEPLOYMENT_GROUP }}
